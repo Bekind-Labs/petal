@@ -146,6 +146,9 @@
   // composing sequence, so this tracks compositionstart/compositionend
   // explicitly too.
   let composing = false;
+  // Keydowns skipped as IME-handled (keyCode 229) -- their keyups must be
+  // skipped too, or the host sees a release for a key it never saw pressed.
+  const imeSkippedCodes = new Set<string>();
   let debugOpen = $state(false);
   let debugStats = $state<RemoteWindowDebugStats | null>(null);
   let debugSnapshot = $state<NetworkSnapshot | null>(null);
@@ -600,7 +603,7 @@
     if (!active) return;
     event.preventDefault();
     pointerId = event.pointerId;
-    (event.currentTarget as HTMLElement).focus({ preventScroll: true });
+    focusKeyboardTarget();
     // The raise-for-click call above already re-keys this overlay window
     // atomically as part of its main-thread raise sequence (#678), so a
     // separate compositorFocusControl call here would be redundant -- it
@@ -712,6 +715,14 @@
     // do NOT preventDefault/stopPropagation here so the browser's own
     // composition UI (candidate window) keeps working normally.
     if (event.isComposing || composing) return;
+    // WebKit (macOS) fires the keydown for the key that commits a composition
+    // (e.g. Enter) AFTER compositionend, with isComposing already false but
+    // keyCode 229. Relaying it would type a stray Enter on the host.
+    if (event.keyCode === 229) {
+      if (action === 'down') imeSkippedCodes.add(event.code);
+      return;
+    }
+    if (action === 'up' && imeSkippedCodes.delete(event.code)) return;
     if (!active) return;
 
     // Do not send Ctrl/Command down until we know whether the next key is a
@@ -807,8 +818,20 @@
     composing = true;
   }
 
+  // Keyboard focus target while controlling. The overlay <button> is not a
+  // text-editing element, so macOS never starts its input method (Japanese,
+  // Chinese, Korean) on it and no composition events fire. A focused, invisible
+  // textarea gives the input method something to attach to.
+  function focusKeyboardTarget() {
+    document.querySelector<HTMLElement>('.control-ime-input')?.focus({ preventScroll: true });
+  }
+
   function onCompositionEnd(event: CompositionEvent) {
     composing = false;
+    // The textarea only exists to host the composition; the committed text is
+    // relayed below, so empty it rather than let it accumulate.
+    const imeInput = document.querySelector<HTMLTextAreaElement>('.control-ime-input');
+    if (imeInput) imeInput.value = '';
     if (drawActive) {
       appendDrawText(event.data ?? '');
       return;
@@ -943,7 +966,7 @@
           drawActive = false;
           clearDrawInput();
         }
-        if (active) requestAnimationFrame(() => document.querySelector<HTMLElement>('.control-overlay')?.focus());
+        if (active) requestAnimationFrame(focusKeyboardTarget);
       };
     controlWindow.__petalRemoteControlSourceDimensions = setSourceDimensions;
     if (controlWindow.__petalPendingControlSourceDimensions) {
@@ -1027,6 +1050,17 @@
     onpointercancel={onPointerUp}
     onwheel={onWheel}
   ></button>
+  {#if active}
+    <!-- Invisible keyboard target so the OS input method can compose text. -->
+    <textarea
+      class="control-ime-input"
+      aria-hidden="true"
+      tabindex="-1"
+      autocomplete="off"
+      autocapitalize="off"
+      spellcheck="false"
+    ></textarea>
+  {/if}
   {#if drawActive && drawTextDraft && drawTextAnchor}
     <div
       class="draw-text-draft"
@@ -1153,6 +1187,22 @@
     background: transparent;
     outline: none;
     cursor: default;
+  }
+
+  .control-ime-input {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    resize: none;
+    overflow: hidden;
+    pointer-events: none;
+    caret-color: transparent;
+    outline: none;
   }
 
   .control-overlay.active {

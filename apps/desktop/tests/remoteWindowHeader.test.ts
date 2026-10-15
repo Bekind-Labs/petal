@@ -617,6 +617,22 @@ test('remote control overlay suppresses per-key relay during IME composition and
   assert.match(remoteControlRs, /fn replay_text\(message: &RemoteControlMessage, sink: &dyn InputSink\)/);
 });
 
+test('remote control gives the OS input method a text-editing target and ignores IME-handled keys', () => {
+  const controlRoute = readFileSync(
+    new URL('../src/routes/compositor/control/+page.svelte', import.meta.url),
+    'utf8'
+  );
+
+  // A <button> is not text-editable, so macOS never starts Japanese/Chinese/
+  // Korean composition on it. Control mode focuses an invisible textarea.
+  assert.match(controlRoute, /<textarea\s+class="control-ime-input"/);
+  assert.match(controlRoute, /requestAnimationFrame\(focusKeyboardTarget\)/);
+  // WebKit fires the committing Enter's keydown after compositionend with
+  // keyCode 229; it must not reach the host as a stray Enter.
+  assert.match(controlRoute, /if \(event\.keyCode === 229\) \{/);
+  assert.match(controlRoute, /imeSkippedCodes\.delete\(event\.code\)/);
+});
+
 test('remote control pointer draft carries an optional clickCount for real double-click (#373)', () => {
   const controlRoute = readFileSync(
     new URL('../src/routes/compositor/control/+page.svelte', import.meta.url),
